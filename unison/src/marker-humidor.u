@@ -1,0 +1,194 @@
+-- marker-humidor: a comment wall for one dry-erase-marker humidor.
+--
+-- Each humidor is its own service (marker-humidor-<instance>) with its own
+-- Database and Environment. Commenters get a random session key from their
+-- browser; the server stores only its sha256, which is what lets them edit or
+-- delete their own comments. Admins send `Authorization: Bearer <admin-token>`
+-- (set at deploy time) and may edit or delete anything.
+--
+-- PERSISTENT TYPE: Comment is stored in an OrderedTable. Changing its fields
+-- breaks reads of existing data; add a new type and migrate instead.
+
+type markerHumidor.Comment =
+  { id : Text, body : Text, createdAt : Nat, editedAt : Optional Nat, owner : Text }
+
+markerHumidor.maxChars : Nat
+markerHumidor.maxChars = 2000
+
+markerHumidor.comments : Database -> OrderedTable Text markerHumidor.Comment
+markerHumidor.comments db = OrderedTable.named db "comments-v1" Universal.ordering
+
+-- URL paths, relative to the service root.
+markerHumidor.apiComments : Parser a a
+markerHumidor.apiComments = Parser.s "api" Parser./ Parser.s "comments"
+
+markerHumidor.apiComment : Parser (Text -> a) a
+markerHumidor.apiComment = markerHumidor.apiComments Parser./ Parser.text
+
+markerHumidor.sha256 : Text -> Text
+markerHumidor.sha256 t = Bytes.toHex (crypto.hashBytes Sha2_256 (Text.toUtf8 t))
+
+markerHumidor.nowMillis : '{Remote} Nat
+markerHumidor.nowMillis = do Int.truncate0 (Instant.millisecondsSinceEpoch Remote.time.now!)
+
+-- Request header values, matching the name case-insensitively as HTTP requires
+-- (browsers send lowercase names; Route.request.header is case-sensitive).
+markerHumidor.header : Text ->{Route} [Text]
+markerHumidor.header name =
+  wanted = Text.toLowercase name
+  Route.request.headers()
+    |> Map.toList
+    |> List.flatMap (cases (k, vs) -> if Text.toLowercase k Text.== wanted then vs else [])
+
+-- Who is asking: an admin, the holder of a session key, or nobody.
+type markerHumidor.Caller = Admin | Session Text | Anonymous
+
+markerHumidor.caller : '{Route, Config, Exception} markerHumidor.Caller
+markerHumidor.caller = do
+  use Text ++ ==
+  use markerHumidor sha256
+  adminToken = Environment.Config.expect "admin-token"
+  match markerHumidor.header "Authorization" with
+    [auth] | sha256 auth == sha256 ("Bearer " ++ adminToken) -> Caller.Admin
+    _ -> match markerHumidor.header "X-Session-Key" with
+      [key] | Text.size key >= 32 -> Caller.Session (sha256 key)
+      _ -> Caller.Anonymous
+
+markerHumidor.mayModify : markerHumidor.Caller -> markerHumidor.Comment -> Boolean
+markerHumidor.mayModify c comment = match c with
+  Caller.Admin -> true
+  Caller.Session owner -> owner Text.== Comment.owner comment
+  Caller.Anonymous -> false
+
+markerHumidor.toJson : markerHumidor.Caller -> markerHumidor.Comment -> Json
+markerHumidor.toJson c comment =
+  base =
+    [ ("id", Json.text (Comment.id comment))
+    , ("text", Json.text (Comment.body comment))
+    , ("createdAt", Json.nat (Comment.createdAt comment))
+    , ("editedAt", Optional.fold (do Json.null) Json.nat (Comment.editedAt comment))
+    , ("mine", Json.boolean (markerHumidor.mayModify c comment))
+    ]
+  match c with
+    -- Admins see a short owner fingerprint, to spot many comments from one session.
+    Caller.Admin -> Json.object (base List.++ [("owner", Json.text (Text.take 8 (Comment.owner comment)))])
+    _ -> Json.object base
+
+-- Validated comment text from a JSON body {"text": "..."}, or a 400.
+markerHumidor.bodyText : '{Route, Exception} Optional Text
+markerHumidor.bodyText = do
+  match catch do Route.request.body.decodeJson do Decoder.object.at! "text" Decoder.text with
+    Left _ ->
+      badRequest.text "Expected a JSON body with a text field."
+      None
+    Right raw -> markerHumidor.checkLength (Text.trim raw)
+
+markerHumidor.checkLength : Text ->{Route} Optional Text
+markerHumidor.checkLength t =
+  n = Text.size t
+  if n Nat.== 0 then
+    badRequest.text "Comment is empty."
+    None
+  else if n Nat.> markerHumidor.maxChars then
+    badRequest.text ("Comment is " Text.++ Nat.toText n Text.++ " characters; the limit is " Text.++ Nat.toText markerHumidor.maxChars Text.++ ".")
+    None
+  else Some t
+
+markerHumidor.page : Text -> Text -> '{Route} ()
+markerHumidor.page label repoUrl = do
+  Route.noCapture GET Parser.root
+  ok.html (markerHumidor.html label repoUrl)
+
+-- One GET route for the API: once a route has matched the method and a path
+-- prefix, routes does not fall through to the next alternative, so
+-- /api/comments and /api/comments/<id> must be told apart here.
+markerHumidor.read : Database -> '{Route, Remote, Config, Exception} ()
+markerHumidor.read db = do
+  rest = Route.route GET (markerHumidor.apiComments Parser./ Parser.rest)
+  c = markerHumidor.caller()
+  table = markerHumidor.comments db
+  match rest with
+    [] ->
+      all = Stream.toList (OrderedTable.toStream table)
+      items = List.reverse (List.map (cases (_, comment) -> markerHumidor.toJson c comment) all)
+      ok.json (Json.object [("comments", Json.array items), ("maxChars", Json.nat markerHumidor.maxChars)])
+    [id] -> match OrderedTable.tryRead table id with
+      Some comment -> ok.json (markerHumidor.toJson c comment)
+      None -> notFound.text "No such comment."
+    _ -> notFound.text "No such path."
+
+markerHumidor.create : Database -> '{Route, Remote, Config, Exception} ()
+markerHumidor.create db = do
+  use Text ++
+  Route.noCapture POST markerHumidor.apiComments
+  match markerHumidor.caller() with
+    Caller.Session owner ->
+      match markerHumidor.bodyText() with
+        Some t ->
+          now = markerHumidor.nowMillis()
+          id = Nat.toText now ++ "-" ++ Text.take 8 (markerHumidor.sha256 (owner ++ t ++ Nat.toText now))
+          comment = Comment id t now None owner
+          OrderedTable.write (markerHumidor.comments db) id comment
+          ok.json (markerHumidor.toJson (Caller.Session owner) comment)
+        None -> ()
+    _ -> forbidden.text "Posting needs a session key (X-Session-Key)."
+
+markerHumidor.edit : Database -> '{Route, Remote, Config, Exception} ()
+markerHumidor.edit db = do
+  id = Route.route PUT markerHumidor.apiComment
+  c = markerHumidor.caller()
+  table = markerHumidor.comments db
+  match OrderedTable.tryRead table id with
+    None -> notFound.text "No such comment."
+    Some comment | markerHumidor.mayModify c comment ->
+      match markerHumidor.bodyText() with
+        Some t ->
+          updated = comment |> Comment.body.set t |> Comment.editedAt.set (Some (markerHumidor.nowMillis()))
+          OrderedTable.write table id updated
+          ok.json (markerHumidor.toJson c updated)
+        None -> ()
+    Some _ -> forbidden.text "You can only edit comments made with your current session."
+
+markerHumidor.remove : Database -> '{Route, Remote, Config, Exception} ()
+markerHumidor.remove db = do
+  id = Route.route DELETE markerHumidor.apiComment
+  c = markerHumidor.caller()
+  table = markerHumidor.comments db
+  match OrderedTable.tryRead table id with
+    None -> notFound.text "No such comment."
+    Some comment | markerHumidor.mayModify c comment ->
+      OrderedTable.delete table id
+      ok.json (Json.object [("deleted", Json.text id)])
+    Some _ -> forbidden.text "You can only delete comments made with your current session."
+
+markerHumidor.service : Text -> Text -> Database -> HttpRequest ->{Exception, Remote, Config, Log} HttpResponse
+markerHumidor.service label repoUrl db =
+  use Route <|>
+  Route.run
+    ( markerHumidor.page label repoUrl
+      <|> markerHumidor.read db
+      <|> markerHumidor.create db
+      <|> markerHumidor.edit db
+      <|> markerHumidor.remove db )
+
+-- Called by `humidor` with the URL name ("chucho"), the display name ("Chucho"),
+-- the repo link for the page's "Powered by" footer ("" for none), and the admin token. The
+-- humidor CLI checks that none of these contain HTML or quote characters.
+markerHumidor.deploy : Text -> Text -> Text -> Text ->{Exception, Cloud} ServiceHash HttpRequest HttpResponse
+markerHumidor.deploy instance label repoUrl adminToken =
+  name = "marker-humidor-" Text.++ instance
+  env = Environment.named name
+  Environment.setValue env "admin-token" adminToken
+  db = Database.named name
+  Database.assign db env
+  deployHttp env (markerHumidor.service label repoUrl db)
+
+-- Removes everything deploy created besides the service itself.
+markerHumidor.teardown : Text ->{Exception, Cloud} ()
+markerHumidor.teardown instance =
+  name = "marker-humidor-" Text.++ instance
+  env = Environment.named name
+  db = Database.named name
+  Database.unassign db env
+  Database.delete db
+  Environment.delete env

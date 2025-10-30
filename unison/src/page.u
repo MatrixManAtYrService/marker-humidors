@@ -1,0 +1,222 @@
+-- The single page each humidor serves. Comments are rendered with textContent,
+-- never innerHTML, so comment text cannot inject markup. The triple-quoted
+-- blocks are raw strings: keep them free of backslashes.
+
+markerHumidor.html : Text -> Text -> Text
+markerHumidor.html label repoUrl =
+  use Text ++
+  link url text = "<a href=\"" ++ url ++ "\">" ++ text ++ "</a>"
+  unisonCloud = link "https://www.unison.cloud/" "unison.cloud"
+  poweredBy =
+    if repoUrl Text.== "" then "Powered by " ++ unisonCloud
+    else "Powered by " ++ unisonCloud ++ " and " ++ link repoUrl (markerHumidor.repoName repoUrl)
+  footer = "<footer><p>" ++ markerHumidor.supplies ++ "</p><p>" ++ poweredBy ++ "</p></footer>"
+  markerHumidor.htmlHead
+    ++ "<header><h1>Marker Humidor</h1><p class=\"name\">name: " ++ label ++ "</p></header>"
+    ++ markerHumidor.intro
+    ++ "<label class=\"question\" for=\"text\">How is " ++ label ++ " doing?</label>"
+    ++ markerHumidor.htmlBody ++ footer ++ markerHumidor.htmlTail
+
+markerHumidor.intro : Text
+markerHumidor.intro = """
+<p class="intro">It takes a long time to test an idea like this. Please leave comments that will help readers in the future understand whether the marker humidor is actually improving marker lifetime. If it is, we can consider making more of them. There's no need to track each marker individually, but if you've been using it long enough to have an idea about whether it's working, please leave a message in the comment area below.</p>
+"""
+
+-- What to buy to build a humidor, shown above the "Powered by" line. Edit for your own fleet.
+markerHumidor.supplies : Text
+markerHumidor.supplies = """
+<a href="https://www.amazon.com/dp/B0F4482GLJ">sponges</a> (these need to be cut down to size) &bull; <a href="https://www.amazon.com/dp/B08YRTJ3DQ">container</a>
+"""
+
+-- "https://github.com/OWNER/REPO" -> "github:OWNER/REPO"; other URLs are shown as they are.
+markerHumidor.repoName : Text -> Text
+markerHumidor.repoName url =
+  prefix = "https://github.com/"
+  if Text.startsWith prefix url then "github:" Text.++ Text.drop (Text.size prefix) url else url
+
+markerHumidor.htmlHead : Text
+markerHumidor.htmlHead = """
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marker Humidor</title>
+<style>
+  :root { --ink: #1d2433; --muted: #667085; --line: #d0d5dd; --bg: #f7f8fa; --card: #fff; --accent: #2563eb; --warn: #b42318; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e4e7ec; --muted: #98a2b3; --line: #344054; --bg: #101828; --card: #1d2939; --accent: #60a5fa; --warn: #f97066; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 40rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+  header { margin-bottom: 1rem; }
+  h1 { font-size: 1.5rem; line-height: 1.2; margin: 0; }
+  .name { color: var(--muted); margin: .125rem 0 0; }
+  .intro { margin: 0 0 1.5rem; }
+  .question { display: block; font-weight: 600; font-size: 1.125rem; margin-bottom: .5rem; }
+  textarea { width: 100%; min-height: 6.5rem; padding: .75rem; font: inherit; color: inherit; background: var(--card);
+             border: 1px solid var(--line); border-radius: .5rem; resize: vertical; }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: .5rem; }
+  .count { color: var(--muted); font-size: .875rem; font-variant-numeric: tabular-nums; }
+  .count.over { color: var(--warn); font-weight: 600; }
+  button { font: inherit; padding: .45rem 1rem; border-radius: .5rem; border: 1px solid var(--accent);
+           background: var(--accent); color: #fff; cursor: pointer; }
+  button.link { background: none; border: none; color: var(--accent); padding: 0 .25rem; font-size: .875rem; }
+  button:disabled { opacity: .45; cursor: default; }
+  .error { color: var(--warn); font-size: .875rem; min-height: 1.25rem; margin-top: .25rem; }
+  ol { list-style: none; padding: 0; margin: 1.5rem 0 0; }
+  li { background: var(--card); border: 1px solid var(--line); border-radius: .5rem; padding: .75rem; margin-bottom: .75rem; }
+  li .meta { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem;
+             color: var(--muted); font-size: .8125rem; margin-bottom: .25rem; }
+  li .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .empty { color: var(--muted); text-align: center; margin-top: 2rem; }
+  footer { color: var(--muted); font-size: .875rem; text-align: center; margin-top: 2.5rem; }
+  footer p { margin: .25rem 0; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+"""
+
+markerHumidor.htmlBody : Text
+markerHumidor.htmlBody = """
+<form id="new">
+  <textarea id="text"></textarea>
+  <div class="row"><span id="count" class="count"></span><button id="submit" type="submit">Post</button></div>
+  <div id="error" class="error" role="alert"></div>
+</form>
+<ol id="comments"></ol>
+<template id="item">
+  <li><div class="meta"><span class="when"></span><span class="actions" hidden>
+    <button class="link edit" type="button">Edit</button><button class="link delete" type="button">Delete</button>
+  </span></div><div class="text"></div></li>
+</template>
+"""
+
+markerHumidor.htmlTail : Text
+markerHumidor.htmlTail = """
+</main>
+<script>
+"use strict";
+const MAX = 2000;
+const api = (location.pathname.endsWith("/") ? location.pathname : location.pathname + "/") + "api/comments";
+
+// A fresh identity per browser tab session. Closing the tab forgets it for good.
+let key = sessionStorage.getItem("marker-humidor-key");
+if (!key) {
+  key = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("");
+  sessionStorage.setItem("marker-humidor-key", key);
+}
+
+const chars = s => [...s.trim()].length;
+const $ = id => document.getElementById(id);
+
+async function call(method, url, text) {
+  const opts = { method, headers: { "X-Session-Key": key } };
+  if (text !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify({ text });
+  }
+  const resp = await fetch(url, opts);
+  if (!resp.ok) throw new Error((await resp.text()) || resp.statusText);
+  return resp.json();
+}
+
+function counter(textarea, label, button) {
+  const update = () => {
+    const n = chars(textarea.value);
+    label.textContent = n + " / " + MAX;
+    label.classList.toggle("over", n > MAX);
+    button.disabled = n === 0 || n > MAX;
+  };
+  textarea.addEventListener("input", update);
+  update();
+}
+
+function when(c) {
+  const fmt = ms => new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return fmt(c.createdAt) + (c.editedAt ? " (edited " + fmt(c.editedAt) + ")" : "");
+}
+
+function render(comments) {
+  const list = $("comments");
+  list.replaceChildren();
+  if (comments.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "No comments yet.";
+    list.append(p);
+    return;
+  }
+  for (const c of comments) {
+    const li = $("item").content.firstElementChild.cloneNode(true);
+    li.querySelector(".when").textContent = when(c);
+    li.querySelector(".text").textContent = c.text;
+    if (c.mine) {
+      li.querySelector(".actions").hidden = false;
+      li.querySelector(".edit").onclick = () => startEdit(li, c);
+      li.querySelector(".delete").onclick = async () => {
+        if (!confirm("Delete this comment?")) return;
+        try { await call("DELETE", api + "/" + encodeURIComponent(c.id)); load(); }
+        catch (e) { $("error").textContent = e.message; }
+      };
+    }
+    list.append(li);
+  }
+}
+
+function startEdit(li, c) {
+  const box = li.querySelector(".text");
+  const area = document.createElement("textarea");
+  area.value = c.text;
+  const label = document.createElement("span");
+  label.className = "count";
+  const save = document.createElement("button");
+  save.textContent = "Save";
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.className = "link";
+  const row = document.createElement("div");
+  row.className = "row";
+  const buttons = document.createElement("span");
+  buttons.append(cancel, save);
+  row.append(label, buttons);
+  box.replaceWith(area);
+  li.append(row);
+  li.querySelector(".actions").hidden = true;
+  counter(area, label, save);
+  area.focus();
+  cancel.onclick = load;
+  save.onclick = async () => {
+    try { await call("PUT", api + "/" + encodeURIComponent(c.id), area.value); load(); }
+    catch (e) { $("error").textContent = e.message; }
+  };
+}
+
+async function load() {
+  try { render((await call("GET", api)).comments); $("error").textContent = ""; }
+  catch (e) { $("error").textContent = "Could not load comments: " + e.message; }
+}
+
+counter($("text"), $("count"), $("submit"));
+$("new").onsubmit = async ev => {
+  ev.preventDefault();
+  $("submit").disabled = true;
+  try {
+    await call("POST", api, $("text").value);
+    $("text").value = "";
+    $("text").dispatchEvent(new Event("input"));
+    load();
+  } catch (e) {
+    $("error").textContent = e.message;
+    $("text").dispatchEvent(new Event("input"));
+  }
+};
+load();
+</script>
+</body>
+</html>
+"""

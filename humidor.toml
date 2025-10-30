@@ -1,0 +1,21 @@
+# Settings for this fleet of marker humidors.
+
+# Linked at the bottom of every humidor page ("Powered by unison.cloud and
+# github:OWNER/REPO"), so people can find this project and run their own.
+# Leave empty to show only the unison.cloud link.
+# Changing it takes effect on the next `humidor deploy`.
+repo_url = "https://github.com/MatrixManAtYrService/marker-humidors"
+
+# Printed under each humidor's QR card, on the same sheet (qr/marker-humidor-<name>.png),
+# to cut off and tape to another side of the box. {name} becomes the humidor's name.
+# Text flows like Markdown: lines join into paragraphs, a blank line starts a new one.
+# After changing it, rewrite the sheets with `humidor qr NAME`.
+card_message = """
+This is a marker humidor. Its name is {name}.
+
+Seal markers inside to prevent them from drying out.
+There should be a puddle of isopropyl alcohol in the bottom,
+but not so deep that markers are submerged.
+
+The humidor will not restore dry markers, either throw them away or visit https://www.ifixit.com/Guide/How+to+Restore++An+Expo+Marker/146008
+"""
